@@ -381,7 +381,7 @@ function loadScriptTag(src, timeoutMs) {
     function EyeOff(p) { return React.createElement(Icon, Object.assign({ name: "EyeOff" }, p)); }
     function PauseCircle(p) { return React.createElement(Icon, Object.assign({ name: "PauseCircle" }, p)); }
 
-    var LOCAL_ONLY_KEYS = ["draft-cart", "draft-buyer", "draft-employee", "sale-draft-cart", "sale-draft-customer", "sale-draft-employee"];
+    var LOCAL_ONLY_KEYS = ["draft-cart", "draft-buyer", "draft-employee", "sale-draft-cart", "sale-draft-customer", "sale-draft-employee", "remember-login"];
     var CLOUD_COLLECTION = "kazi_orders_store";
     var __kaziDb = null;
 
@@ -1222,6 +1222,17 @@ function KaziOrder() {
                 const se2 = await window.storage.get("sale-draft-employee");
                 if (se2 && se2.value)
                     setSaleEmployeeId(se2.value);
+            }
+            catch (e) { }
+            // "remember-login" used to be synced to the shared cloud database
+            // by mistake, meaning whoever logged in last on any device became
+            // the auto-login on every device. It's local-only now, but this
+            // clears out that leaked document (containing a saved password)
+            // if it's still sitting in the cloud from before the fix.
+            try {
+                if (window.__kaziDb) {
+                    window.__kaziDb.collection(window.__kaziCloudCollection || "kazi_orders_store").doc("remember-login").delete().catch(() => { });
+                }
             }
             catch (e) { }
             loadedRef.current = true;
@@ -3207,19 +3218,27 @@ function ShopSaleView({ categories, activeCategory, setActiveCategory, search, s
                     products.length === 0 && React.createElement(EmptyState, { icon: Search, title: "No products match your search" }),
                     (() => {
                         const grouped = {};
+                        const fallbackOnly = {};
                         products.forEach((p) => {
-                            const secs = Array.isArray(p.menuSections) && p.menuSections.length > 0 ? p.menuSections : (p.menuSection && p.menuSection.trim() ? [p.menuSection.trim()] : [p.category]);
+                            const explicit = Array.isArray(p.menuSections) && p.menuSections.length > 0 ? p.menuSections : (p.menuSection && p.menuSection.trim() ? [p.menuSection.trim()] : null);
+                            const secs = explicit || [p.category];
                             secs.forEach((sec) => {
                                 if (!grouped[sec])
                                     grouped[sec] = [];
                                 grouped[sec].push(p);
+                                if (fallbackOnly[sec] === undefined)
+                                    fallbackOnly[sec] = true;
+                                if (explicit)
+                                    fallbackOnly[sec] = false;
                             });
                         });
-                        const orderedKeys = sectionOrder.filter((s) => grouped[s]);
-                        Object.keys(grouped).forEach((k) => { if (!orderedKeys.includes(k))
-                            orderedKeys.push(k); });
-                        return orderedKeys.map((sec) => [sec, grouped[sec].slice().sort((a, b) => a.name.localeCompare(b.name))]).map(([sec, items]) => (React.createElement("div", { key: sec, style: { marginBottom: 16 } },
-                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, margin: "0 0 8px 2px" } },
+                        const realKeys = sectionOrder.filter((s) => grouped[s] && !fallbackOnly[s]);
+                        Object.keys(grouped).forEach((k) => { if (!fallbackOnly[k] && !realKeys.includes(k))
+                            realKeys.push(k); });
+                        const fallbackKeys = Object.keys(grouped).filter((k) => fallbackOnly[k]);
+                        const orderedKeys = realKeys.concat(fallbackKeys);
+                        return orderedKeys.map((sec) => [sec, grouped[sec].slice().sort((a, b) => a.name.localeCompare(b.name)), fallbackOnly[sec]]).map(([sec, items, isFallback]) => (React.createElement("div", { key: sec, style: { marginBottom: 16 } },
+                        !isFallback && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, margin: "0 0 8px 2px" } },
                             React.createElement("div", { style: { width: 22, height: 22, borderRadius: 7, background: "var(--brand-light)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
                                 React.createElement(Icon, { name: categoryIcon(sec), size: 12, color: "var(--brand)" })),
                             React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "var(--text)" } }, sec),
@@ -5744,7 +5763,7 @@ function PublicMenuView({ products, categories, categoryOrder = [], invoiceHeadl
                                 shopAddress || "",
                                 shopAddress && shopPhone ? " \u00B7 " : "",
                                 shopPhone ? "Tel: " + shopPhone : "")) :
-                categories.filter((sec) => sections[sec]).concat(Object.keys(sections).filter((sec) => !categories.includes(sec))).map((sec) => [sec, sections[sec].slice().sort((a, b) => a.name.localeCompare(b.name))]).map(([sec, items]) => {
+                categories.filter((sec) => sections[sec] && sec !== cat).concat(Object.keys(sections).filter((sec) => !categories.includes(sec) && sec !== cat)).concat(sections[cat] ? [cat] : []).map((sec) => [sec, sections[sec].slice().sort((a, b) => a.name.localeCompare(b.name))]).map(([sec, items]) => {
                     const isFallback = sec === cat;
                     return (React.createElement("div", { key: sec, style: { marginBottom: 18 } },
                         !isFallback && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 } },
