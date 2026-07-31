@@ -190,6 +190,10 @@ function loadScriptTag(src, timeoutMs) {
           return React.createElement("svg", common, React.createElement("path", { d: "M17 3a2.8 2.8 0 014 4L7.5 20.5 2 22l1.5-5.5L17 3z" }));
         case "Check":
           return React.createElement("svg", common, React.createElement("path", { d: "M20 6L9 17l-5-5" }));
+        case "CheckCircle2":
+          return React.createElement("svg", common,
+            React.createElement("circle", { cx: "12", cy: "12", r: "10" }),
+            React.createElement("path", { d: "M8 12l3 3 5-6" }));
         case "ChevronRight":
           return React.createElement("svg", common, React.createElement("path", { d: "M9 6l6 6-6 6" }));
         case "ChevronLeft":
@@ -339,6 +343,7 @@ function loadScriptTag(src, timeoutMs) {
     function Search(p) { return React.createElement(Icon, Object.assign({ name: "Search" }, p)); }
     function Edit2(p) { return React.createElement(Icon, Object.assign({ name: "Edit2" }, p)); }
     function Check(p) { return React.createElement(Icon, Object.assign({ name: "Check" }, p)); }
+    function CheckCircle2(p) { return React.createElement(Icon, Object.assign({ name: "CheckCircle2" }, p)); }
     function ChevronRight(p) { return React.createElement(Icon, Object.assign({ name: "ChevronRight" }, p)); }
     function ChevronLeft(p) { return React.createElement(Icon, Object.assign({ name: "ChevronLeft" }, p)); }
     function Phone(p) { return React.createElement(Icon, Object.assign({ name: "Phone" }, p)); }
@@ -2052,8 +2057,14 @@ function KaziOrder() {
     }
     function confirmReceipt(orderId, receivedQtyByProduct) {
         const order = orders.find((o) => o.id === orderId);
-        if (!order || order.received)
+        if (!order)
             return;
+        // If this order was already (partially) received once, only the NEW
+        // amount on top of what was recorded last time should be added to
+        // stock — otherwise re-opening a short order to log the rest of a
+        // delayed delivery would double-count whatever arrived the first time.
+        const previouslyReceived = {};
+        (order.receivedItems || []).forEach((ri) => { previouslyReceived[ri.productId] = ri.receivedQty; });
         const receivedItems = order.items.map((it) => ({
             productId: it.productId,
             receivedQty: Math.max(0, receivedQtyByProduct[it.productId] != null ? receivedQtyByProduct[it.productId] : 0),
@@ -2063,18 +2074,22 @@ function KaziOrder() {
                 const item = receivedItems.find((it) => it.productId === p.id);
                 if (!item)
                     return p;
+                const delta = item.receivedQty - (previouslyReceived[p.id] || 0);
+                if (delta === 0)
+                    return p;
                 const orderedItem = order.items.find((it) => it.productId === p.id);
                 const unitsPerPack = (orderedItem && orderedItem.unitsPerPack) || p.unitsPerPack || 1;
-                return { ...p, stock: (p.stock || 0) + item.receivedQty * unitsPerPack };
+                return { ...p, stock: Math.max(0, (p.stock || 0) + delta * unitsPerPack) };
             });
             // Receiving a pack also tops up every cut linked to it, using each
             // cut's own yield — how many pieces of that cut one pack unit yields.
             receivedItems.forEach((item) => {
-                if (item.receivedQty <= 0)
+                const delta = item.receivedQty - (previouslyReceived[item.productId] || 0);
+                if (delta <= 0)
                     return;
                 const orderedItem = order.items.find((it) => it.productId === item.productId);
                 const unitsPerPack = (orderedItem && orderedItem.unitsPerPack) || 1;
-                next = distributeYieldToLinkedCuts(next, item.productId, item.receivedQty * unitsPerPack);
+                next = distributeYieldToLinkedCuts(next, item.productId, delta * unitsPerPack);
             });
             return next;
         });
@@ -2096,6 +2111,60 @@ function KaziOrder() {
         } : o));
         setReceiveModalOrder(null);
         setToast("Receipt confirmed — invoice and inventory updated");
+    }
+    // Confirms a SINGLE item on an order — stock updates immediately for
+    // that item only, leaving every other item on the order untouched until
+    // it's individually confirmed too. Re-confirming an item you already
+    // checked (e.g. correcting a mistake) only applies the difference.
+    function confirmReceiptItem(orderId, productId, newQty) {
+        const order = orders.find((o) => o.id === orderId);
+        if (!order)
+            return;
+        const orderedItem = order.items.find((it) => it.productId === productId);
+        if (!orderedItem)
+            return;
+        const existing = (order.receivedItems || []).find((ri) => ri.productId === productId);
+        const previousQty = existing ? existing.receivedQty : 0;
+        const delta = Math.max(0, newQty) - previousQty;
+        if (delta !== 0) {
+            setProducts((prev) => {
+                let next = prev.map((p) => {
+                    if (p.id !== productId)
+                        return p;
+                    const unitsPerPack = orderedItem.unitsPerPack || p.unitsPerPack || 1;
+                    return { ...p, stock: Math.max(0, (p.stock || 0) + delta * unitsPerPack) };
+                });
+                if (delta > 0) {
+                    const unitsPerPack = orderedItem.unitsPerPack || 1;
+                    next = distributeYieldToLinkedCuts(next, productId, delta * unitsPerPack);
+                }
+                return next;
+            });
+        }
+        setOrders((prev) => prev.map((o) => {
+            if (o.id !== orderId)
+                return o;
+            const nextReceivedItems = (o.receivedItems || []).filter((ri) => ri.productId !== productId);
+            nextReceivedItems.push({ productId, receivedQty: Math.max(0, newQty) });
+            const allConfirmed = o.items.every((it) => nextReceivedItems.some((ri) => ri.productId === it.productId));
+            const updatedItems = o.items.map((it) => {
+                const r = nextReceivedItems.find((ri) => ri.productId === it.productId);
+                if (!r)
+                    return it;
+                return { ...it, orderedQty: it.orderedQty != null ? it.orderedQty : it.qty, qty: r.receivedQty };
+            });
+            const newTotalCost = updatedItems.reduce((s, it) => s + it.ip * it.qty, 0);
+            const newTotalRetail = updatedItems.reduce((s, it) => s + it.mrp * it.qty, 0);
+            const newTotalProfit = newTotalRetail - newTotalCost;
+            return {
+                ...o,
+                items: updatedItems,
+                totalCost: newTotalCost, totalInvoice: newTotalCost, totalRetail: newTotalRetail, totalProfit: newTotalProfit,
+                received: allConfirmed,
+                receivedAt: allConfirmed ? new Date().toISOString() : o.receivedAt,
+                receivedItems: nextReceivedItems,
+            };
+        }));
     }
     function deleteOrder(id) {
         const order = orders.find((o) => o.id === id);
@@ -2743,7 +2812,7 @@ function KaziOrder() {
         reviewOpen && (React.createElement(ReviewInvoiceModal, { cartLines: cartLines, buyerName: buyerName, setBuyerName: setBuyerName, employees: employees, employeeId: employeeId, setEmployeeId: setEmployeeId, changeQty: changeQty, setQty: setQty, removeFromCart: removeFromCart, totalInvoice: totalInvoice, totalRetail: totalRetail, totalProfit: totalProfit, totalItems: totalItems, orders: orders, onCancel: () => setReviewOpen(false), onSubmit: generateOrder })),
         orderConfirm && (React.createElement(OrderConfirmModal, { order: orderConfirm, onClose: () => setOrderConfirm(null), onShare: () => shareOrder(orderConfirm), onCopy: () => copyOrder(orderConfirm), onDownload: () => downloadOrder(orderConfirm), onToast: setToast, onReorder: () => reorderInvoice(orderConfirm), onOpenReceive: () => setReceiveModalOrder(orderConfirm) })),
         selectedOrder && (React.createElement(OrderConfirmModal, { order: selectedOrder, onClose: () => setSelectedOrder(null), onShare: () => shareOrder(selectedOrder), onCopy: () => copyOrder(selectedOrder), onDownload: () => downloadOrder(selectedOrder), onToast: setToast, onDelete: canManageHistory ? () => setConfirmDeleteOrder(selectedOrder) : undefined, onReorder: canManageHistory ? () => reorderInvoice(selectedOrder) : undefined, onOpenReceive: canManageHistory ? () => setReceiveModalOrder(selectedOrder) : undefined })),
-        receiveModalOrder && (React.createElement(ReceiveOrderModal, { order: receiveModalOrder, onConfirm: (receivedQty) => confirmReceipt(receiveModalOrder.id, receivedQty), onCancel: () => setReceiveModalOrder(null) })),
+        receiveModalOrder && (React.createElement(ReceiveOrderModal, { order: receiveModalOrder, onConfirmItem: (productId, qty) => confirmReceiptItem(receiveModalOrder.id, productId, qty), onCancel: () => setReceiveModalOrder(null) })),
         heldOrdersOpen && (React.createElement(HeldOrdersModal, { parkedSales: visibleParkedSales, employees: employees, products: products, currentUser: currentUser, onResume: resumeParkedSale, onDiscard: discardParkedSale, onClose: () => setHeldOrdersOpen(false) })),
         productModal && (React.createElement(ProductModal, { mode: productModal.mode, product: productModal.product, categories: productCategories, menuSections: menuSections, allProducts: products, onSave: saveProduct, onCancel: () => setProductModal(null) })),
         categoryModal && (React.createElement(CategoryModal, { onSave: addCategory, onCancel: () => setCategoryModal(false) })),
@@ -4400,9 +4469,9 @@ function HistoryView({ orders, onSelect, onDelete, onReorder, onOpenReceive, sho
                         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexShrink: 0, marginLeft: 8 } },
                             React.createElement("span", { style: { fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 15 } }, money(o.totalInvoice)),
                             React.createElement(ChevronRight, { size: 16, color: "var(--text-muted)" }))),
-                    !o.received && onOpenReceive && (React.createElement("button", { onClick: () => onOpenReceive(o), title: "Confirm what arrived", style: { padding: "6px 10px", flexShrink: 0, borderRadius: 8, border: "1px solid var(--amber)", background: "var(--amber-light)", display: "flex", alignItems: "center", gap: 4, color: "var(--amber)", fontSize: 11.5, fontWeight: 600 } },
+                    onOpenReceive && receiptStatus(o) !== "full" && (React.createElement("button", { onClick: () => onOpenReceive(o), title: receiptStatus(o) === "partial" ? "Log the rest of this delivery" : "Confirm what arrived", style: { padding: "6px 10px", flexShrink: 0, borderRadius: 8, border: "1px solid var(--amber)", background: "var(--amber-light)", display: "flex", alignItems: "center", gap: 4, color: "var(--amber)", fontSize: 11.5, fontWeight: 600 } },
                         React.createElement(Package, { size: 13 }),
-                        " Receive")),
+                        receiptStatus(o) === "partial" ? " Receive rest" : " Receive")),
                     onReorder && (React.createElement("button", { onClick: () => onReorder(o), title: "Reorder this invoice", style: { width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: "none", background: "none", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" } },
                         React.createElement(RotateCcw, { size: 14 }))),
                     onDelete && (React.createElement("button", { onClick: () => onDelete(o), title: "Delete invoice", style: { width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: "none", background: "none", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" } },
@@ -4638,59 +4707,119 @@ function HeldOrdersModal({ parkedSales, employees, products, currentUser, onResu
             }))),
         confirmDiscard && (React.createElement(ConfirmModal, { title: "Discard waiting order", message: "This order and everything in its cart will be removed. This can't be undone.", confirmLabel: "Discard", onConfirm: () => { onDiscard(confirmDiscard); setConfirmDiscard(null); }, onCancel: () => setConfirmDiscard(null) }))));
 }
-function ReceiveOrderModal({ order, onConfirm, onCancel }) {
+function ReceiveOrderModal({ order, onConfirmItem, onCancel }) {
+    const isReopen = !!order.received;
     const [receivedQty, setReceivedQty] = useState(() => {
         const initial = {};
-        order.items.forEach((it) => { initial[it.productId] = it.qty; });
+        order.items.forEach((it) => {
+            const r = (order.receivedItems || []).find((ri) => ri.productId === it.productId);
+            initial[it.productId] = r ? r.receivedQty : it.qty;
+        });
         return initial;
     });
-    function setQtyFor(productId, value) {
+    const [confirmed, setConfirmed] = useState(() => {
+        const seeded = new Set();
+        (order.receivedItems || []).forEach((ri) => seeded.add(ri.productId));
+        return seeded;
+    });
+    const [partialOpen, setPartialOpen] = useState(() => new Set());
+    function orderedQtyOf(it) {
+        return it.orderedQty != null ? it.orderedQty : it.qty;
+    }
+    function commitQty(productId, qty) {
+        setReceivedQty((prev) => ({ ...prev, [productId]: qty }));
+        setConfirmed((prev) => new Set(prev).add(productId));
+        onConfirmItem(productId, qty);
+    }
+    function setQtyDraft(productId, value) {
         const n = Math.max(0, parseInt(value, 10) || 0);
         setReceivedQty((prev) => ({ ...prev, [productId]: n }));
     }
+    function markStatus(productId, status, orderedQty) {
+        if (status === "full") {
+            commitQty(productId, orderedQty);
+            setPartialOpen((prev) => { const next = new Set(prev); next.delete(productId); return next; });
+        }
+        else if (status === "none") {
+            commitQty(productId, 0);
+            setPartialOpen((prev) => { const next = new Set(prev); next.delete(productId); return next; });
+        }
+        else {
+            setPartialOpen((prev) => new Set(prev).add(productId));
+        }
+    }
     function markAllAsOrdered() {
-        const all = {};
-        order.items.forEach((it) => { all[it.productId] = it.qty; });
-        setReceivedQty(all);
+        order.items.forEach((it) => commitQty(it.productId, orderedQtyOf(it)));
+        setPartialOpen(new Set());
     }
     function markAllAsNone() {
-        const none = {};
-        order.items.forEach((it) => { none[it.productId] = 0; });
-        setReceivedQty(none);
+        order.items.forEach((it) => commitQty(it.productId, 0));
+        setPartialOpen(new Set());
     }
-    const anyShort = order.items.some((it) => (receivedQty[it.productId] || 0) < it.qty);
-    return (React.createElement(ModalShell, { onClose: onCancel, width: 440 },
+    const anyShort = order.items.some((it) => confirmed.has(it.productId) && (receivedQty[it.productId] || 0) < orderedQtyOf(it));
+    const checkedCount = order.items.filter((it) => confirmed.has(it.productId)).length;
+    const allChecked = checkedCount === order.items.length;
+    return (React.createElement(ModalShell, { onClose: onCancel, width: 460 },
         React.createElement("div", { style: { padding: "22px 24px" } },
             React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 } },
-                React.createElement("span", { style: { fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 16 } }, "Confirm what arrived"),
+                React.createElement("span", { style: { fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 16 } }, isReopen ? "Log the rest of this delivery" : "Confirm what arrived"),
                 React.createElement("button", { onClick: onCancel, style: { background: "none", border: "none" } },
                     React.createElement(X, { size: 18 }))),
             React.createElement("div", { style: { fontSize: 12.5, color: "var(--text-muted)", marginBottom: 14 } },
                 order.id,
                 " \u00B7 ",
                 order.buyerName,
-                ". Adjust any item you received less (or more) of than you ordered \u2014 stock updates based on what you confirm here."),
+                ". Mark each item as it's checked \u2014 stock updates right away for that item, the rest stay as they are until you get to them."),
             React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
                 React.createElement("button", { onClick: markAllAsOrdered, style: { flex: 1, padding: "8px", borderRadius: 8, border: "1px solid var(--line)", background: "#fff", fontSize: 12, fontWeight: 500 } }, "Got everything ordered"),
                 React.createElement("button", { onClick: markAllAsNone, style: { flex: 1, padding: "8px", borderRadius: 8, border: "1px solid var(--line)", background: "#fff", fontSize: 12, fontWeight: 500 } }, "Received nothing")),
-            React.createElement("div", { className: "scroll-thin", style: { maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10 } }, order.items.map((it, idx) => {
-                const rq = receivedQty[it.productId] != null ? receivedQty[it.productId] : it.qty;
-                const short = rq < it.qty;
-                return (React.createElement("div", { key: it.productId, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderTop: idx === 0 ? "none" : "1px solid var(--line)", gap: 10 } },
-                    React.createElement("div", { style: { minWidth: 0, flex: 1 } },
-                        React.createElement("div", { style: { fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, it.name),
-                        React.createElement("div", { style: { fontSize: 11.5, color: "var(--text-muted)" } },
-                            "Ordered: ",
-                            it.qty)),
-                    React.createElement("input", { type: "number", min: "0", value: rq, onChange: (e) => setQtyFor(it.productId, e.target.value), style: {
-                            width: 64, textAlign: "center", padding: "6px 4px", borderRadius: 8, fontSize: 13, fontFamily: "var(--font-mono)",
-                            border: "1px solid " + (short ? "var(--amber)" : "var(--line)"), background: short ? "var(--amber-light)" : "#fff",
-                        } })));
+            React.createElement("div", { className: "scroll-thin", style: { maxHeight: 360, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10 } }, order.items.map((it, idx) => {
+                const orderedQty = orderedQtyOf(it);
+                const rq = receivedQty[it.productId] != null ? receivedQty[it.productId] : orderedQty;
+                const isConfirmed = confirmed.has(it.productId);
+                const showPartialInput = partialOpen.has(it.productId);
+                const status = !isConfirmed ? null : (rq === orderedQty ? "full" : rq === 0 ? "none" : "partial");
+                return (React.createElement("div", { key: it.productId, style: { padding: "12px 14px", borderTop: idx === 0 ? "none" : "1px solid var(--line)", background: isConfirmed ? "transparent" : "var(--paper)" } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 10 } },
+                        React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+                            React.createElement("div", { style: { fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, it.name),
+                            React.createElement("div", { style: { fontSize: 11.5, color: "var(--text-muted)" } },
+                                "Ordered: ",
+                                orderedQty,
+                                isConfirmed ? " \u00B7 confirmed: " + rq : "")),
+                        isConfirmed ? React.createElement(CheckCircle2, { size: 18, color: "var(--frozen)", style: { flexShrink: 0 } }) : React.createElement("div", { style: { width: 18, height: 18, borderRadius: "50%", border: "2px solid var(--line)", flexShrink: 0 } })),
+                    React.createElement("div", { style: { display: "flex", gap: 6 } },
+                        React.createElement("button", { onClick: () => markStatus(it.productId, "full", orderedQty), style: {
+                                flex: 1, padding: "7px 4px", borderRadius: 7, fontSize: 11.5, fontWeight: 600,
+                                border: "1px solid " + (status === "full" ? "var(--frozen)" : "var(--line)"),
+                                background: status === "full" ? "var(--frozen-light)" : "#fff",
+                                color: status === "full" ? "var(--frozen)" : "var(--text-muted)",
+                            } }, "Full"),
+                        React.createElement("button", { onClick: () => markStatus(it.productId, "partial", orderedQty), style: {
+                                flex: 1, padding: "7px 4px", borderRadius: 7, fontSize: 11.5, fontWeight: 600,
+                                border: "1px solid " + (status === "partial" ? "var(--amber)" : "var(--line)"),
+                                background: status === "partial" ? "var(--amber-light)" : "#fff",
+                                color: status === "partial" ? "var(--amber)" : "var(--text-muted)",
+                            } }, "Partial"),
+                        React.createElement("button", { onClick: () => markStatus(it.productId, "none", orderedQty), style: {
+                                flex: 1, padding: "7px 4px", borderRadius: 7, fontSize: 11.5, fontWeight: 600,
+                                border: "1px solid " + (status === "none" ? "var(--red)" : "var(--line)"),
+                                background: status === "none" ? "var(--red-light)" : "#fff",
+                                color: status === "none" ? "var(--red)" : "var(--text-muted)",
+                            } }, "None")),
+                    showPartialInput && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 8 } },
+                        React.createElement("span", { style: { fontSize: 11.5, color: "var(--text-muted)" } }, "Qty received:"),
+                        React.createElement("input", { type: "number", min: "0", max: String(orderedQty), value: rq, autoFocus: true, onChange: (e) => setQtyDraft(it.productId, e.target.value), onBlur: (e) => commitQty(it.productId, Math.max(0, parseInt(e.target.value, 10) || 0)), onKeyDown: (e) => { if (e.key === "Enter")
+                                    e.target.blur(); }, style: {
+                                width: 64, textAlign: "center", padding: "6px 4px", borderRadius: 8, fontSize: 13, fontFamily: "var(--font-mono)",
+                                border: "1px solid var(--amber)", background: "var(--amber-light)",
+                            } }))));
             })),
-            anyShort && (React.createElement("div", { style: { fontSize: 12, color: "var(--amber)", marginTop: 10 } }, "Some quantities are less than what you ordered \u2014 that's fine, stock will only reflect what you actually received.")),
-            React.createElement("div", { style: { display: "flex", gap: 10, marginTop: 20 } },
-                React.createElement("button", { onClick: onCancel, style: { flex: 1, padding: "12px", borderRadius: 10, border: "1px solid var(--line)", background: "#fff", fontSize: 14, fontWeight: 500 } }, "Cancel"),
-                React.createElement("button", { onClick: () => onConfirm(receivedQty), style: { flex: 1.4, padding: "12px", borderRadius: 10, border: "none", background: "var(--brand)", color: "#fff", fontSize: 14, fontWeight: 600 } }, "Confirm & update stock")))));
+            React.createElement("div", { style: { fontSize: 11.5, color: allChecked ? "var(--frozen)" : "var(--text-muted)", marginTop: 10, fontWeight: 500 } },
+                checkedCount + " of " + order.items.length + " items checked" + (allChecked ? " \u2014 all done" : "")),
+            anyShort && (React.createElement("div", { style: { fontSize: 12, color: "var(--amber)", marginTop: 6 } }, "Some quantities are less than what you ordered \u2014 that's fine, stock only reflects what you've confirmed so far.")),
+            React.createElement("div", { style: { marginTop: 16 } },
+                React.createElement("button", { onClick: onCancel, style: { width: "100%", padding: "12px", borderRadius: 10, border: "none", background: allChecked ? "var(--brand)" : "var(--line)", color: allChecked ? "#fff" : "var(--text-muted)", fontSize: 14, fontWeight: 600 } }, allChecked ? "Done" : "Close \u2014 finish the rest later")))));
 }
 function QuantityPromptModal({ product, context, initialQty, maxQty, onConfirm, onCancel }) {
     const [qty, setQty] = useState(String(initialQty || 1));
@@ -4893,7 +5022,8 @@ function OrderConfirmModal({ order, onClose, onShare, onCopy, onDownload, onToas
                             const r = (order.receivedItems || []).find((ri) => ri.productId === it.productId);
                             const got = r ? r.receivedQty : 0;
                             return it.name + " (" + got + "/" + orderedQty + ")";
-                        }).join(", ")))));
+                        }).join(", "))),
+                    status === "partial" && onOpenReceive && (React.createElement("button", { onClick: onOpenReceive, style: { width: "100%", marginTop: 10, padding: "9px", borderRadius: 8, border: "none", background: "var(--amber)", color: "#fff", fontSize: 12.5, fontWeight: 600 } }, "Log the rest of this delivery"))));
             })(),
             React.createElement("button", { onClick: onShare, style: { width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "11px", borderRadius: 10, border: "none", background: "var(--brand)", color: "#fff", fontSize: 13, fontWeight: 600, marginBottom: 8 } },
                 React.createElement(Share2, { size: 14 }),
