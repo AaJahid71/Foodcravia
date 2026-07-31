@@ -882,8 +882,53 @@ function KaziOrder() {
     // --- Stock order receiving (confirming what actually arrived) ---
     const [receiveModalOrder, setReceiveModalOrder] = useState(null);
     const loadSharedData = React.useCallback(async () => {
+        // All of this shop's data lives under independent keys, so instead of
+        // awaiting 30+ reads one at a time (each a full network round trip,
+        // adding up to several seconds), fire them all at once and only then
+        // process the results. Total wait becomes "the slowest single read"
+        // instead of "the sum of every read" — this is the main reason the
+        // app used to take a few seconds to open every time.
+        const keys = [
+            "products",
+            "default-photos-purged",
+            "orders",
+            "categories",
+            "menu-sections",
+            "public-menu-view-mode",
+            "shop-sale-view-mode",
+            "visit-shop-categories",
+            "visit-shop-sections",
+            "announcement-text",
+            "announcement-enabled",
+            "announcement-color",
+            "discount-exempt-categories",
+            "sound-enabled",
+            "tap-sound-enabled",
+            "vibration-enabled",
+            "shopsale-dark-mode",
+            "employees",
+            "trashed-products",
+            "trashed-employees",
+            "branches",
+            "current-branch-id",
+            "invoice-headline",
+            "shop-address",
+            "shop-phone",
+            "shop-hours",
+            "shop-whatsapp",
+            "header-image",
+            "discount-labels",
+            "admin-password",
+            "shop-expenses",
+            "expense-categories",
+            "shop-sales",
+            "parked-sales",
+        ];
+        const results = await Promise.all(keys.map((k) => window.storage.get(k).catch(() => null)));
+        const dataByKey = {};
+        keys.forEach((k, i) => { dataByKey[k] = results[i]; });
         try {
-            const p = await window.storage.get("products");
+            const p = dataByKey["products"];
             if (p && p.value) {
                 let list = JSON.parse(p.value);
                 // One-time cleanup: earlier testing pre-populated some products with
@@ -891,7 +936,7 @@ function KaziOrder() {
                 // images don't linger, without touching photos uploaded afterward.
                 // Written back to storage (including cloud sync, if on) immediately
                 // so a periodic re-sync can't pull the un-purged copy back down.
-                const purged = await window.storage.get("default-photos-purged");
+                const purged = dataByKey["default-photos-purged"];
                 if (!purged || !purged.value) {
                     const cleaned = list.map((prod) => prod.image ? (() => { const { image, ...rest } = prod; return rest; })() : prod);
                     const changed = JSON.stringify(cleaned) !== JSON.stringify(list);
@@ -905,79 +950,79 @@ function KaziOrder() {
         }
         catch (e) { }
         try {
-            const o = await window.storage.get("orders");
+            const o = dataByKey["orders"];
             if (o && o.value)
                 setOrders(JSON.parse(o.value));
         }
         catch (e) { }
         try {
-            const c = await window.storage.get("categories");
+            const c = dataByKey["categories"];
             if (c && c.value)
                 setCategoryList(JSON.parse(c.value));
         }
         catch (e) { }
         try {
-            const ms = await window.storage.get("menu-sections");
+            const ms = dataByKey["menu-sections"];
             if (ms && ms.value)
                 setMenuSectionList(JSON.parse(ms.value));
         }
         catch (e) { }
         try {
-            const pvm = await window.storage.get("public-menu-view-mode");
+            const pvm = dataByKey["public-menu-view-mode"];
             if (pvm && pvm.value)
                 setPublicMenuViewMode(pvm.value);
-            const svm = await window.storage.get("shop-sale-view-mode");
+            const svm = dataByKey["shop-sale-view-mode"];
             if (svm && svm.value)
                 setShopSaleViewMode(svm.value);
         }
         catch (e) { }
         try {
-            const vsc = await window.storage.get("visit-shop-categories");
+            const vsc = dataByKey["visit-shop-categories"];
             if (vsc && vsc.value)
                 setVisitShopCategories(JSON.parse(vsc.value));
-            const vss = await window.storage.get("visit-shop-sections");
+            const vss = dataByKey["visit-shop-sections"];
             if (vss && vss.value)
                 setVisitShopSections(JSON.parse(vss.value));
         }
         catch (e) { }
         try {
-            const at = await window.storage.get("announcement-text");
+            const at = dataByKey["announcement-text"];
             if (at && at.value)
                 setAnnouncementText(at.value);
-            const ae = await window.storage.get("announcement-enabled");
+            const ae = dataByKey["announcement-enabled"];
             if (ae && ae.value)
                 setAnnouncementEnabled(ae.value === "true");
-            const ac = await window.storage.get("announcement-color");
+            const ac = dataByKey["announcement-color"];
             if (ac && ac.value)
                 setAnnouncementColor(ac.value);
         }
         catch (e) { }
         try {
-            const dec = await window.storage.get("discount-exempt-categories");
+            const dec = dataByKey["discount-exempt-categories"];
             if (dec && dec.value)
                 setDiscountExemptCategories(JSON.parse(dec.value));
         }
         catch (e) { }
         try {
-            const snd = await window.storage.get("sound-enabled");
+            const snd = dataByKey["sound-enabled"];
             if (snd && snd.value)
                 setSoundEnabled(snd.value === "true");
-            const tapSnd = await window.storage.get("tap-sound-enabled");
+            const tapSnd = dataByKey["tap-sound-enabled"];
             if (tapSnd && tapSnd.value)
                 setTapSoundEnabled(tapSnd.value === "true");
-            const vib = await window.storage.get("vibration-enabled");
+            const vib = dataByKey["vibration-enabled"];
             if (vib && vib.value)
                 setVibrationEnabled(vib.value === "true");
         }
         catch (e) { }
         try {
-            const dm = await window.storage.get("shopsale-dark-mode");
+            const dm = dataByKey["shopsale-dark-mode"];
             if (dm && dm.value)
                 setShopSaleDarkMode(dm.value === "true");
         }
         catch (e) { }
         try {
-            const emp = await window.storage.get("employees");
+            const emp = dataByKey["employees"];
             if (emp && emp.value) {
                 const parsed = JSON.parse(emp.value);
                 setEmployees(parsed.map((e) => ({ ...e, permissions: normalizePermissions(e.permissions) })));
@@ -987,12 +1032,12 @@ function KaziOrder() {
         try {
             const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
             const now = Date.now();
-            const tp = await window.storage.get("trashed-products");
+            const tp = dataByKey["trashed-products"];
             if (tp && tp.value) {
                 const parsed = JSON.parse(tp.value);
                 setTrashedProducts(parsed.filter((t) => now - new Date(t.deletedAt).getTime() < THIRTY_DAYS));
             }
-            const te = await window.storage.get("trashed-employees");
+            const te = dataByKey["trashed-employees"];
             if (te && te.value) {
                 const parsed = JSON.parse(te.value);
                 setTrashedEmployees(parsed.filter((t) => now - new Date(t.deletedAt).getTime() < THIRTY_DAYS));
@@ -1000,52 +1045,52 @@ function KaziOrder() {
         }
         catch (e) { }
         try {
-            const br = await window.storage.get("branches");
+            const br = dataByKey["branches"];
             if (br && br.value)
                 setBranches(JSON.parse(br.value));
-            const cb = await window.storage.get("current-branch-id");
+            const cb = dataByKey["current-branch-id"];
             if (cb && cb.value)
                 setCurrentBranchId(cb.value);
         }
         catch (e) { }
         try {
-            const h = await window.storage.get("invoice-headline");
+            const h = dataByKey["invoice-headline"];
             if (h && h.value)
                 setInvoiceHeadline(h.value);
         }
         catch (e) { }
         try {
-            const sa = await window.storage.get("shop-address");
+            const sa = dataByKey["shop-address"];
             if (sa && sa.value)
                 setShopAddress(sa.value);
         }
         catch (e) { }
         try {
-            const sp = await window.storage.get("shop-phone");
+            const sp = dataByKey["shop-phone"];
             if (sp && sp.value)
                 setShopPhone(sp.value);
         }
         catch (e) { }
         try {
-            const sh = await window.storage.get("shop-hours");
+            const sh = dataByKey["shop-hours"];
             if (sh && sh.value)
                 setShopHours(sh.value);
         }
         catch (e) { }
         try {
-            const sw = await window.storage.get("shop-whatsapp");
+            const sw = dataByKey["shop-whatsapp"];
             if (sw && sw.value)
                 setShopWhatsapp(sw.value);
         }
         catch (e) { }
         try {
-            const hi = await window.storage.get("header-image");
+            const hi = dataByKey["header-image"];
             if (hi && hi.value)
                 setHeaderImage(hi.value);
         }
         catch (e) { }
         try {
-            const dl = await window.storage.get("discount-labels");
+            const dl = dataByKey["discount-labels"];
             if (dl && dl.value) {
                 const parsed = JSON.parse(dl.value);
                 const normalized = parsed.map((l) => typeof l === "string" ? { name: l, type: "percent", value: 10 } : l);
@@ -1054,31 +1099,31 @@ function KaziOrder() {
         }
         catch (e) { }
         try {
-            const ap = await window.storage.get("admin-password");
+            const ap = dataByKey["admin-password"];
             if (ap && ap.value)
                 setAdminPassword(ap.value);
         }
         catch (e) { }
         try {
-            const se = await window.storage.get("shop-expenses");
+            const se = dataByKey["shop-expenses"];
             if (se && se.value)
                 setShopExpenses(JSON.parse(se.value));
         }
         catch (e) { }
         try {
-            const ec = await window.storage.get("expense-categories");
+            const ec = dataByKey["expense-categories"];
             if (ec && ec.value)
                 setExpenseCategories(JSON.parse(ec.value));
         }
         catch (e) { }
         try {
-            const ss = await window.storage.get("shop-sales");
+            const ss = dataByKey["shop-sales"];
             if (ss && ss.value)
                 setShopSales(JSON.parse(ss.value));
         }
         catch (e) { }
         try {
-            const ps = await window.storage.get("parked-sales");
+            const ps = dataByKey["parked-sales"];
             if (ps && ps.value)
                 setParkedSales(JSON.parse(ps.value));
         }
@@ -2707,6 +2752,9 @@ function KaziOrder() {
         .kazi-app input[data-cell]:focus, .kazi-app select[data-cell]:focus { border-color: var(--brand) !important; background: #fff !important; }
         .nav-item { transition: background 0.15s ease; }
         @keyframes kazi-spin { to { transform: rotate(360deg); } }
+        @keyframes kazi-splash-in { 0% { opacity: 0; transform: scale(0.9) translateY(6px); } 100% { opacity: 1; transform: scale(1) translateY(0); } }
+        @keyframes kazi-splash-wave { 0% { background-position: -220% 0; } 100% { background-position: 220% 0; } }
+        @keyframes kazi-splash-dot { 0%, 100% { opacity: 0.25; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1); } }
         .mobile-cart-header { display: none; }
         .kazi-cart-bar-mobile { display: none; }
         .kazi-float-nav { display: block; }
@@ -2780,9 +2828,18 @@ function KaziOrder() {
           .kazi-order-split .scroll-thin { padding-bottom: 76px !important; }
         }
       `),
-        !authChecked ? (React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, minHeight: "100vh" } },
-            React.createElement("div", { style: { width: 28, height: 28, borderRadius: "50%", border: "3px solid var(--line)", borderTopColor: "var(--brand)", animation: "kazi-spin 0.8s linear infinite" } }),
-            React.createElement("div", { style: { fontSize: 13, color: "var(--text-muted)" } }, "Loading\u2026"))) : !currentUser ? (React.createElement(React.Fragment, null,
+        !authChecked ? (React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 22, minHeight: "100vh", background: "var(--paper)" } },
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 14, animation: "kazi-splash-in 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards" } },
+                React.createElement("div", { style: { width: 56, height: 56, borderRadius: 16, background: "linear-gradient(135deg, var(--brand) 0%, #E0722F 100%)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 10px 28px rgba(185,84,31,0.35)" } },
+                    React.createElement(Store, { size: 28, color: "#fff", strokeWidth: 2 })),
+                React.createElement("div", { style: {
+                        fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 34, letterSpacing: "-0.01em",
+                        backgroundImage: "linear-gradient(90deg, var(--text) 30%, var(--brand) 50%, var(--text) 70%)",
+                        backgroundSize: "220% 100%", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+                        animation: "kazi-splash-wave 2.4s ease-in-out infinite 0.5s",
+                    } }, "Foodcravia")),
+            React.createElement("div", { style: { display: "flex", gap: 6 } },
+                [0, 1, 2].map((i) => React.createElement("div", { key: i, style: { width: 6, height: 6, borderRadius: "50%", background: "var(--brand)", animation: "kazi-splash-dot 1.1s ease-in-out infinite " + (i * 0.15) + "s" } }))))) : !currentUser ? (React.createElement(React.Fragment, null,
             React.createElement(PublicMenuView, { products: publicMenuProducts, categories: menuSections, categoryOrder: productCategories, invoiceHeadline: invoiceHeadline, shopAddress: shopAddress, shopPhone: shopPhone, shopHours: shopHours, shopWhatsapp: shopWhatsapp, headerImage: headerImage, onLoginClick: () => setLoginModalOpen(true), configuredViewMode: publicMenuViewMode, visitShopCategories: visitShopCategories, visitShopSections: visitShopSections, announcementText: announcementText, announcementEnabled: announcementEnabled, announcementColor: announcementColor }),
             loginModalOpen && (React.createElement(UnifiedLoginModal, { adminPassword: adminPassword, employees: employees, onLogin: (u) => { setCurrentUser(u); setLoginModalOpen(false); }, onCancel: () => setLoginModalOpen(false) })))) : (React.createElement("div", { className: "kazi-app kazi-layout", style: { display: "flex", overflow: "hidden" } },
             React.createElement(Sidebar, { view: view, setView: setView, currentUser: currentUser, onLogout: handleLogout, onChangePassword: () => setChangePasswordModalOpen(true), branches: branches, currentBranchId: currentBranchId, setCurrentBranchId: setCurrentBranchId }),
