@@ -3486,6 +3486,7 @@ function StockCountView({ products, onUpdateStock }) {
     const [search, setSearch] = useState("");
     const [category, setCategory] = useState("All");
     const [savedId, setSavedId] = useState(null);
+    const [preciseOpenId, setPreciseOpenId] = useState(null);
     // Cuts/variants now hold their own independent stock too (auto-topped-up
     // when the pack they're linked to is restocked), so they show up here
     // just like any other product — useful for the occasional manual
@@ -3502,7 +3503,7 @@ function StockCountView({ products, onUpdateStock }) {
         setTimeout(() => setSavedId((cur) => (cur === id ? null : cur)), 900);
     }
     return (React.createElement("div", null,
-        React.createElement(PageHeader, { title: "Stock count", subtitle: "Tap the number and adjust \u2014 saves the moment you change it" }),
+        React.createElement(PageHeader, { title: "Stock count", subtitle: "Counted by packet \u2014 tap the number and adjust, saves the moment you change it" }),
         React.createElement("div", { style: { padding: "0 24px 16px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" } },
             React.createElement("div", { style: { position: "relative", width: 220 } },
                 React.createElement(Search, { size: 15, style: { position: "absolute", left: 10, top: 10, color: "var(--text-muted)" } }),
@@ -3517,34 +3518,58 @@ function StockCountView({ products, onUpdateStock }) {
                 const stock = p.stock != null ? p.stock : 0;
                 const low = stock > 0 && stock <= 10;
                 const out = stock <= 0;
+                const unitsPerPack = p.unitsPerPack || 1;
+                const hasPacks = unitsPerPack > 1;
+                const packCount = Math.floor(stock / unitsPerPack);
+                const remainder = stock % unitsPerPack;
+                const preciseOpen = preciseOpenId === p.id;
+                function setPacks(newPacks) {
+                    const n = Math.max(0, newPacks);
+                    onUpdateStock(p.id, n * unitsPerPack + (preciseOpen ? 0 : remainder));
+                    flashSaved(p.id);
+                }
                 return (React.createElement("div", { key: p.id, style: {
-                        display: "flex", alignItems: "center", gap: 12, background: "#fff",
+                        display: "flex", flexDirection: "column", gap: 8, background: "#fff",
                         border: "1.5px solid " + (savedId === p.id ? "var(--frozen)" : "var(--line)"),
                         borderLeft: "3px solid " + (out ? "var(--red)" : low ? "var(--amber)" : (savedId === p.id ? "var(--frozen)" : "var(--line)")),
                         borderRadius: 12, padding: "12px 14px", transition: "border-color 0.3s ease",
                     } },
-                    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
-                        React.createElement("div", { style: { fontSize: 14, fontWeight: 600, lineHeight: 1.3 } }, p.name),
-                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 2 } },
-                            React.createElement(CategoryBadge, { category: p.category }),
-                            savedId === p.id && (React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, color: "var(--frozen)", fontWeight: 500 } },
-                                React.createElement(Check, { size: 11 }),
-                                " Saved")))),
-                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 } },
-                        React.createElement("button", { onClick: () => { onUpdateStock(p.id, Math.max(0, stock - 1)); flashSaved(p.id); }, style: { width: 40, height: 40, borderRadius: 10, border: "1px solid var(--line)", background: "var(--paper)", display: "flex", alignItems: "center", justifyContent: "center" } },
-                            React.createElement(Minus, { size: 18 })),
-                        React.createElement("input", { type: "number", min: "0", value: stock, onChange: (e) => {
-                                const v = parseInt(e.target.value, 10);
-                                onUpdateStock(p.id, isNaN(v) || v < 0 ? 0 : v);
-                                flashSaved(p.id);
-                            }, style: {
-                                width: 64, textAlign: "center", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)",
-                                padding: "8px 4px", borderRadius: 10, border: "1px solid var(--line)",
-                                color: out ? "var(--red)" : low ? "var(--amber)" : "var(--text)",
-                                background: out ? "var(--red-light)" : low ? "var(--amber-light)" : "#fff",
-                            } }),
-                        React.createElement("button", { onClick: () => { onUpdateStock(p.id, stock + 1); flashSaved(p.id); }, style: { width: 40, height: 40, borderRadius: 10, border: "1px solid var(--line)", background: "var(--paper)", display: "flex", alignItems: "center", justifyContent: "center" } },
-                            React.createElement(Plus, { size: 18 })))));
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+                        React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                            React.createElement("div", { style: { fontSize: 14, fontWeight: 600, lineHeight: 1.3 } }, p.name),
+                            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, marginTop: 2, flexWrap: "wrap" } },
+                                React.createElement(CategoryBadge, { category: p.category }),
+                                hasPacks && React.createElement("span", { style: { fontSize: 11, color: "var(--text-muted)" } },
+                                    unitsPerPack + " pcs/pack \u00B7 " + stock + " pcs total"),
+                                savedId === p.id && (React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, color: "var(--frozen)", fontWeight: 500 } },
+                                    React.createElement(Check, { size: 11 }),
+                                    " Saved")))),
+                        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 } },
+                            React.createElement("button", { onClick: () => setPacks(packCount - 1), style: { width: 40, height: 40, borderRadius: 10, border: "1px solid var(--line)", background: "var(--paper)", display: "flex", alignItems: "center", justifyContent: "center" } },
+                                React.createElement(Minus, { size: 18 })),
+                            React.createElement("div", { style: { display: "flex", flexDirection: "column", alignItems: "center" } },
+                                React.createElement("input", { type: "number", min: "0", value: packCount, onChange: (e) => {
+                                        const v = parseInt(e.target.value, 10);
+                                        setPacks(isNaN(v) ? 0 : v);
+                                    }, style: {
+                                        width: 64, textAlign: "center", fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)",
+                                        padding: "8px 4px", borderRadius: 10, border: "1px solid var(--line)",
+                                        color: out ? "var(--red)" : low ? "var(--amber)" : "var(--text)",
+                                        background: out ? "var(--red-light)" : low ? "var(--amber-light)" : "#fff",
+                                    } }),
+                                React.createElement("span", { style: { fontSize: 10, color: "var(--text-muted)", marginTop: 2 } }, hasPacks ? "packs" : "pcs")),
+                            React.createElement("button", { onClick: () => setPacks(packCount + 1), style: { width: 40, height: 40, borderRadius: 10, border: "1px solid var(--line)", background: "var(--paper)", display: "flex", alignItems: "center", justifyContent: "center" } },
+                                React.createElement(Plus, { size: 18 })))),
+                    hasPacks && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, paddingTop: 8, borderTop: "1px solid var(--line)" } },
+                        !preciseOpen ? React.createElement("button", { onClick: () => setPreciseOpenId(p.id), style: { fontSize: 11.5, color: "var(--brand)", fontWeight: 600, background: "none", border: "none", padding: 0 } },
+                            remainder > 0 ? "+" + remainder + " extra pcs \u2014 edit exact pieces" : "Edit exact pieces") : React.createElement(React.Fragment, null,
+                            React.createElement("span", { style: { fontSize: 11.5, color: "var(--text-muted)" } }, "Exact pieces:"),
+                            React.createElement("input", { type: "number", min: "0", value: stock, onChange: (e) => {
+                                    const v = parseInt(e.target.value, 10);
+                                    onUpdateStock(p.id, isNaN(v) || v < 0 ? 0 : v);
+                                    flashSaved(p.id);
+                                }, style: { width: 72, textAlign: "center", fontSize: 13, fontFamily: "var(--font-mono)", padding: "5px 4px", borderRadius: 8, border: "1px solid var(--line)" } }),
+                            React.createElement("button", { onClick: () => setPreciseOpenId(null), style: { fontSize: 11.5, color: "var(--text-muted)", background: "none", border: "none", padding: 0 } }, "Done")))));
             }),
             filtered.length === 0 && React.createElement(EmptyState, { icon: Search, title: "No products found", subtitle: "Try a different search or category." }))));
 }
